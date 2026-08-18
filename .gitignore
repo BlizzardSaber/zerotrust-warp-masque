@@ -1,0 +1,11 @@
+# 密钥与设备凭据——绝不入库
+out/
+surge-代理链片段.txt
+
+# 二进制与本地环境
+usque
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+/tmp/
