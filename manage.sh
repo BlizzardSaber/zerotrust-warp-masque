@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Zero Trust WARP 工具箱 — MASQUE 隧道管理面板
+#  Zero Trust WARP 工具箱
 #  用法:
 #    ./manage.sh            # 交互菜单
-#    ./manage.sh start      # 直接启动隧道
-#    ./manage.sh stop|status|log|info|menu
+#    ./manage.sh start|stop|status|info
 # ============================================================
 set -u
 cd "$(dirname "$0")"
@@ -81,8 +80,8 @@ launch() {
 
 start() {
     CFG=$(current_cfg)
-    [ -x "$USQUE" ] || die "usque 不存在，先跑菜单 12 下载（或手动放到本目录）"
-    [ -f "$CFG" ] || die "没有 $CFG，先用菜单 6/7/10 注册设备"
+    [ -x "$USQUE" ] || die "usque 不存在；请将 usque 放到项目目录后重试"
+    [ -f "$CFG" ] || die "没有 MASQUE 节点；请先提取 MASQUE 节点"
     if running; then c_green "隧道已在运行 (pid $(cat "$PIDFILE"))"; exit 0; fi
     local mode="${1:-auto}"
     # 本网络对 162.159.197.x 的 TCP/UDP 拦截会动态变化，auto 模式两种都探测
@@ -109,7 +108,7 @@ ok() {
 
 fail() {
     c_red "❌ UDP 和 TCP 都连不上（网络对 162.159.197.x 的拦截又变化了）"
-    c_dim "    可稍后重试，或用菜单 3 复测；也可把流量经 Surge TUN 代理链转发"
+    c_dim "    可稍后重试，或检查网络是否允许 Cloudflare MASQUE 流量"
 }
 
 stop() {
@@ -130,6 +129,19 @@ stop() {
 status() {
     if running; then
         c_green "● 隧道运行中 (pid $(cat "$PIDFILE"))"
+        local cfg; cfg=$(current_cfg)
+        if [ -f "$cfg" ]; then
+            "$PY" - "$cfg" <<'EOF'
+import json, sys
+from pathlib import Path
+cfg = json.load(open(sys.argv[1]))
+print("  SOCKS5 地址 : 127.0.0.1:1080")
+print(f"  当前节点    : {Path(sys.argv[1]).name}")
+print(f"  MASQUE 端点 : {cfg.get('endpoint_v4', '?')}:443")
+print(f"  SNI         : {cfg.get('sni', '自动识别')}")
+print(f"  隧道 IPv4   : {cfg.get('ipv4', '?')}")
+EOF
+        fi
         echo "  出口信息:"
         trace_test || c_red "  隧道进程在，但出口测试失败（可能正在重连，稍后再试）"
     else
@@ -174,10 +186,6 @@ print(f"""节点信息 ({sys.argv[1]})
 EOF
 }
 
-list_nodes() {
-    "$PY" zt_masque.py --list
-}
-
 select_node() {
     local -a nodes
     nodes=(out/masque-nodes/masque-*.json)
@@ -190,94 +198,76 @@ select_node() {
     done
     local n
     read -r -p "选择节点编号（直接回车取消）: " n
-    [ -n "$n" ] || return
-    case "$n" in *[!0-9]*) c_red "请输入编号"; return ;; esac
-    [ "$n" -ge 1 ] && [ "$n" -le "${#nodes[@]}" ] || { c_red "编号无效"; return; }
+    [ -n "$n" ] || return 1
+    case "$n" in *[!0-9]*) c_red "请输入编号"; return 1 ;; esac
+    [ "$n" -ge 1 ] && [ "$n" -le "${#nodes[@]}" ] || { c_red "编号无效"; return 1; }
     printf '%s\n' "${nodes[$((n - 1))]}" > "$SELECTED_CFG"
     c_green "✅ 已选择 ${nodes[$((n - 1))]##*/}；尚未启动 SOCKS5。"
 }
 
-# ---------- 设备注册 ----------
-
-reg_new() {
-    local org email
-    read -r -p "组织名 (xxx.cloudflareaccess.com 的 xxx，默认 ): " org
-    org=${org:-}
-    read -r -p "登录邮箱: " email
-    [ -n "$email" ] || die "邮箱不能为空"
-    rm -f /tmp/zt_otp_code.txt
-    "$PY" zt_new_run.py "$org" "$email" /tmp/zt_otp_code.txt
-}
-
-reg_new_bg() {
-    # 后台跑 reg_new 的流程：发码后提示用户输码写文件，前端进程轮询
-    echo
-    c_dim "提示: 验证码邮件发出后，再开一个终端执行:"
-    c_dim "  echo 验证码 > /tmp/zt_otp_code.txt"
-    reg_new
-}
-
-switch_masque() {
-    "$PY" zt_masque.py
-    c_dim "提示: 切换后如隧道在跑，请 stop 再 start 以加载新配置"
-}
-
-revert_wg()      { "$PY" zt_masque.py --revert; }
-check_device()   { "$PY" zt_masque.py --check; }
-reg_free()       { "$PY" zt_masque.py --free; }
-
-dl_usque() {
-    local os arch url
-    os=$(uname -s | tr "[:upper:]" "[:lower:]")
-    case $(uname -m) in
-        arm64|aarch64) arch=arm64 ;;
-        x86_64)        arch=amd64 ;;
-        *) die "不支持的架构 $(uname -m)" ;;
-    esac
-    echo "下载 usque ($os/$arch) ..."
-    url=$(curl -s "https://api.github.com/repos/Diniboy1123/usque/releases/latest" \
-        | "$PY" - "os=$os" "arch=$arch" <<'EOF'
-import json, sys
-kv = dict(a.split("=", 1) for a in sys.argv[1:])
-for a in json.load(sys.stdin).get("assets", []):
-    if a["name"].endswith(f"_{kv['os']}_{kv['arch']}.zip"):
-        print(a["browser_download_url"]); break
-EOF
-)
-    [ -n "$url" ] || die "没找到对应平台的 release 资产"
-    curl -sL -o /tmp/usque.zip "$url" || die "下载失败"
-    unzip -o -j -q /tmp/usque.zip -d . && rm -f /tmp/usque.zip
-    chmod +x ./usque
-    c_green "✅ usque 已就绪: $(./usque version 2>/dev/null || echo ./usque)"
-}
-
 # ---------- 菜单 ----------
+
+extract_wireguard() {
+    "$PY" zt_login.py
+}
+
+extract_masque() {
+    "$PY" zt_masque.py --new
+}
+
+socks_control() {
+    if running; then
+        c_green "SOCKS5 正在运行：127.0.0.1:1080"
+        c_dim "当前节点：$(current_cfg)"
+        read -r -p "输入 1 停止；直接回车返回：" action
+        [ "$action" = "1" ] && stop
+        return
+    fi
+    echo "请选择要启动为 SOCKS5 的 MASQUE 节点："
+    select_node || return
+    read -r -p "确认启动 127.0.0.1:1080？[Y/n] " answer
+    case "${answer:-Y}" in
+        Y|y) start ;;
+        *) c_dim "已取消；未启动 SOCKS5。" ;;
+    esac
+}
+
+show_nodes() {
+    echo "WireGuard："
+    if [ -f out/warp-wireguard.conf ]; then
+        "$PY" zerotrust2wg.py --qr >/dev/null || c_red "  WireGuard 二维码生成失败"
+        echo "  配置文件：out/warp-wireguard.conf"
+        [ -f out/warp-wireguard-qr.png ] && echo "  导入二维码：out/warp-wireguard-qr.png"
+    else
+        echo "  暂无已提取的 WireGuard 节点"
+    fi
+    echo
+    echo "MASQUE："
+    "$PY" zt_masque.py --list
+    if compgen -G 'out/masque-nodes/*.png' > /dev/null; then
+        echo "  二维码目录：out/masque-nodes/"
+    fi
+    echo
+    c_dim "二维码和配置均含私钥，请勿公开分享。"
+}
 
 menu() {
     while true; do
         echo
-        echo "====== Zero Trust WARP 工具箱 ======"
-        echo "  1) 查看已导出 MASQUE 节点  2) 选择节点（不启动 SOCKS5）"
-        echo "  3) 启动所选节点为 SOCKS5   4) 停止隧道"
-        echo "  5) 状态 + 出口测试         6) 查看日志/所选节点信息"
-        echo "  7) 注册新 Zero Trust 设备 (OTP)"
-        echo "  8) 现有设备切到 MASQUE     9) 切回 WireGuard"
-        echo " 10) 查询设备状态            11) 注册免费 WARP 设备"
-        echo " 12) 下载/更新 usque         0) 退出"
+        echo "====== Zero Trust WARP 节点工具 ======"
+        echo "  1) 提取 WireGuard 节点与二维码"
+        echo "  2) 提取 MASQUE 节点与二维码"
+        echo "  3) MASQUE SOCKS5：选择节点并启动/停止"
+        echo "  4) 查看当前 SOCKS5 状态"
+        echo "  5) 查看已获取的节点与二维码"
+        echo "  0) 退出"
         read -r -p "选择: " n
         case "$n" in
-            1) list_nodes ;;
-            2) select_node ;;
-            3) start ;;
-            4) stop ;;
-            5) status ;;
-            6) log; info ;;
-            7) reg_new_bg ;;
-            8) switch_masque ;;
-            9) revert_wg ;;
-            10) check_device ;;
-            11) reg_free ;;
-            12) dl_usque ;;
+            1) extract_wireguard ;;
+            2) extract_masque ;;
+            3) socks_control ;;
+            4) status ;;
+            5) show_nodes ;;
             0|q) exit 0 ;;
             *) c_dim "无效选项" ;;
         esac
@@ -291,5 +281,5 @@ case "${1:-menu}" in
     log)   log ;;
     info)  info ;;
     menu)  menu ;;
-    *)     echo "用法: $0 [start [auto|udp|tcp]|stop|status|log|info|menu]"; exit 1 ;;
+    *)     echo "用法: $0 [start [auto|udp|tcp]|stop|status|info|menu]"; exit 1 ;;
 esac
