@@ -11,7 +11,8 @@ cd "$(dirname "$0")"
 
 PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
 USQUE=./usque
-CFG=out/warp-masque.json
+DEFAULT_CFG=out/warp-masque.json
+SELECTED_CFG=out/selected-masque-node.txt
 PIDFILE=out/usque.pid
 LOG=out/usque.log
 
@@ -21,15 +22,32 @@ c_dim()   { printf "\033[2m%s\033[0m\n" "$1"; }
 
 die() { c_red "✘ $1"; exit 1; }
 
+# 默认使用最近导出的节点；在菜单中选择历史节点后，后续手动启动会使用所选节点。
+current_cfg() {
+    if [ -f "$SELECTED_CFG" ]; then
+        local selected
+        selected=$(head -n 1 "$SELECTED_CFG")
+        case "$selected" in
+            out/masque-nodes/*.json) [ -f "$selected" ] && { echo "$selected"; return; } ;;
+        esac
+    fi
+    echo "$DEFAULT_CFG"
+}
+
 # ---------- 隧道控制 ----------
 
 running() {
     [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
 }
 
-# 根据最近一次注册响应判断 team/free，自动选 SNI
+# 优先读取所选节点保存的 SNI；旧配置再按最近注册响应判断 team/free。
 detect_sni() {
     local t="team"
+    if [ -n "${CFG:-}" ] && [ -f "$CFG" ]; then
+        local saved
+        saved=$("$PY" -c "import json; print(json.load(open('$CFG')).get('sni', ''))" 2>/dev/null || true)
+        [ -n "$saved" ] && { echo "$saved"; return; }
+    fi
     if [ -f out/debug_masque_resp.json ]; then
         t=$("$PY" -c "import json;print((json.load(open('out/debug_masque_resp.json')).get('account') or {}).get('account_type','team'))" 2>/dev/null || echo team)
     fi
@@ -62,7 +80,8 @@ launch() {
 }
 
 start() {
-    [ -x "$USQUE" ] || die "usque 不存在，先跑菜单 11 下载（或手动放到本目录）"
+    CFG=$(current_cfg)
+    [ -x "$USQUE" ] || die "usque 不存在，先跑菜单 12 下载（或手动放到本目录）"
     [ -f "$CFG" ] || die "没有 $CFG，先用菜单 6/7/10 注册设备"
     if running; then c_green "隧道已在运行 (pid $(cat "$PIDFILE"))"; exit 0; fi
     local mode="${1:-auto}"
@@ -124,8 +143,9 @@ log() {
 }
 
 info() {
-    [ -f "$CFG" ] || die "没有 $CFG"
-    "$PY" - "$CFG" <<'EOF'
+    local cfg; cfg=$(current_cfg)
+    [ -f "$cfg" ] || die "没有 $cfg"
+    "$PY" - "$cfg" <<'EOF'
 import base64, json, subprocess, sys
 cfg = json.load(open(sys.argv[1]))
 pem = subprocess.run(["openssl", "ec", "-inform", "DER"],
@@ -152,6 +172,29 @@ print(f"""节点信息 ({sys.argv[1]})
   HTTP2   关 (团队边缘无 TCP 回退; 免费节点可开)
   客户端公钥(备用) {base64.b64encode(spki).decode()}""")
 EOF
+}
+
+list_nodes() {
+    "$PY" zt_masque.py --list
+}
+
+select_node() {
+    local -a nodes
+    nodes=(out/masque-nodes/masque-*.json)
+    [ -e "${nodes[0]}" ] || die "暂无已导出的 MASQUE 节点"
+    echo "已导出的 MASQUE 节点："
+    local i=1 node
+    for node in "${nodes[@]}"; do
+        echo "  $i) ${node##*/}"
+        i=$((i + 1))
+    done
+    local n
+    read -r -p "选择节点编号（直接回车取消）: " n
+    [ -n "$n" ] || return
+    case "$n" in *[!0-9]*) c_red "请输入编号"; return ;; esac
+    [ "$n" -ge 1 ] && [ "$n" -le "${#nodes[@]}" ] || { c_red "编号无效"; return; }
+    printf '%s\n' "${nodes[$((n - 1))]}" > "$SELECTED_CFG"
+    c_green "✅ 已选择 ${nodes[$((n - 1))]##*/}；尚未启动 SOCKS5。"
 }
 
 # ---------- 设备注册 ----------
@@ -214,25 +257,27 @@ menu() {
     while true; do
         echo
         echo "====== Zero Trust WARP 工具箱 ======"
-        echo "  1) 启动 MASQUE 隧道        2) 停止隧道"
-        echo "  3) 状态 + 出口测试         4) 查看日志"
-        echo "  5) 查看节点信息            6) 注册新 Zero Trust 设备 (OTP)"
-        echo "  7) 现有设备切到 MASQUE     8) 切回 WireGuard"
-        echo "  9) 查询设备状态            10) 注册免费 WARP 设备"
-        echo " 11) 下载/更新 usque         0) 退出"
+        echo "  1) 查看已导出 MASQUE 节点  2) 选择节点（不启动 SOCKS5）"
+        echo "  3) 启动所选节点为 SOCKS5   4) 停止隧道"
+        echo "  5) 状态 + 出口测试         6) 查看日志/所选节点信息"
+        echo "  7) 注册新 Zero Trust 设备 (OTP)"
+        echo "  8) 现有设备切到 MASQUE     9) 切回 WireGuard"
+        echo " 10) 查询设备状态            11) 注册免费 WARP 设备"
+        echo " 12) 下载/更新 usque         0) 退出"
         read -r -p "选择: " n
         case "$n" in
-            1) start ;;
-            2) stop ;;
-            3) status ;;
-            4) log ;;
-            5) info ;;
-            6) reg_new_bg ;;
-            7) switch_masque ;;
-            8) revert_wg ;;
-            9) check_device ;;
-            10) reg_free ;;
-            11) dl_usque ;;
+            1) list_nodes ;;
+            2) select_node ;;
+            3) start ;;
+            4) stop ;;
+            5) status ;;
+            6) log; info ;;
+            7) reg_new_bg ;;
+            8) switch_masque ;;
+            9) revert_wg ;;
+            10) check_device ;;
+            11) reg_free ;;
+            12) dl_usque ;;
             0|q) exit 0 ;;
             *) c_dim "无效选项" ;;
         esac
