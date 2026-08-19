@@ -159,6 +159,36 @@ def validate_team_or_cleanup(resp):
     raise SystemExit("请重新获取 token 后立刻运行。")
 
 
+def generate_wireguard_qr(out):
+    """为当前 WireGuard 配置生成 Shadowrocket 可扫描的二维码。"""
+    conf = out / "warp-wireguard.conf"
+    if not conf.exists():
+        raise SystemExit("未找到 out/warp-wireguard.conf，无法生成二维码。")
+    text = conf.read_text()
+    # 兼容本功能加入前生成的旧配置：把账户里保存的 client-id 写为
+    # Shadowrocket 需要的 Reserved 字段，再编码二维码。
+    if "\nReserved =" not in text:
+        account_file = out / "warp-account.json"
+        if account_file.exists():
+            reserved = json.loads(account_file.read_text()).get("reserved") or []
+            if reserved:
+                text = text.replace(
+                    "PersistentKeepalive = 25\n",
+                    "PersistentKeepalive = 25\nReserved = " +
+                    ", ".join(str(b) for b in reserved) + "\n")
+                conf.write_text(text)
+    try:
+        import qrcode
+    except ImportError:
+        raise SystemExit("缺少二维码组件。请执行: python3 -m pip install -r requirements.txt")
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=10, border=4)
+    qr.add_data(text)
+    qr.make(fit=True)
+    qr.make_image(fill_color="black", back_color="white").save(
+        out / "warp-wireguard-qr.png")
+
+
 def write_outputs(resp, priv, pub):
     """把注册结果写成 4 个配置文件（供 zerotrust2wg / zt_login 共用）。"""
     acct = resp.get("account", {})
@@ -200,10 +230,9 @@ def write_outputs(resp, priv, pub):
         "AllowedIPs = 0.0.0.0/0, ::/0",
         f"Endpoint = {endpoint}",
         "PersistentKeepalive = 25",
+        f"Reserved = {', '.join(str(b) for b in reserved)}",
         "",
-        f"# Cloudflare WARP 需要额外的 reserved/client-id 字段: {reserved_slash}",
-        "# 官方 WireGuard 客户端不支持该字段，请在 Surge/Loon/sing-box/",
-        "# Shadowrocket 等支持的客户端中使用（见 warp-surge.txt / warp-singbox.json）。",
+        "# Cloudflare WARP 需要 Reserved/client-id；请使用支持该字段的客户端。",
     ]
     (out / "warp-wireguard.conf").write_text("\n".join(lines) + "\n")
 
@@ -240,6 +269,8 @@ def write_outputs(resp, priv, pub):
     (out / "warp-singbox.json").write_text(
         json.dumps(singbox, indent=2, ensure_ascii=False) + "\n")
 
+    generate_wireguard_qr(out)
+
     print(f"""
 Zero Trust 注册成功 ✔  配置已写入 {out}/
 
@@ -253,6 +284,7 @@ Zero Trust 注册成功 ✔  配置已写入 {out}/
   warp-wireguard.conf  标准 WireGuard 配置（官方客户端不认 reserved 字段）
   warp-surge.txt       Surge 片段，含 client-id，直接粘贴即用
   warp-singbox.json    sing-box wireguard outbound
+  warp-wireguard-qr.png Shadowrocket 扫码导入二维码（含私钥，勿外传）
   warp-account.json    账户信息存档（含私钥，勿外传）
 
 设备会出现在 Zero Trust 后台 Settings → WARP Client → Devices 列表里。
@@ -262,6 +294,10 @@ Zero Trust 注册成功 ✔  配置已写入 {out}/
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--qr":
+        generate_wireguard_qr(Path(__file__).resolve().parent / "out")
+        print("WireGuard 二维码已生成: out/warp-wireguard-qr.png")
+        return
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)

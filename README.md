@@ -6,7 +6,7 @@
 ## 功能
 
 - **OTP 登录**：本地复刻 Cloudflare Access 邮箱验证码登录，拿 Zero Trust Team Token
-- **WireGuard 注册**：注册设备并导出 WireGuard / Surge / sing-box 配置
+- **WireGuard 注册**：注册设备并导出 WireGuard / Surge / sing-box 配置和 Shadowrocket 二维码
 - **MASQUE 注册**：注册（或切换）设备为 MASQUE 模式，导出 [usque](https://github.com/Diniboy1123/usque) 配置和 Shadowrocket `masque://` 二维码
 - **隧道托管**：usque 转本地 SOCKS5（仅绑定 127.0.0.1），UDP/HTTP/3 优先、TCP/HTTP/2 自动回退
 - **管理面板**：`./manage.sh` 一站式菜单
@@ -18,20 +18,20 @@ git clone https://github.com/BlizzardSaber/zerotrust-warp-masque.git
 cd zerotrust-warp-masque
 
 ./manage.sh            # 打开菜单
-# 11) 下载/更新 usque 二进制
-#  6) 注册新 Zero Trust 设备（输入组织名 + 邮箱，去邮箱拿 6 位验证码，
-#     另开终端执行: echo 验证码 > /tmp/zt_otp_code.txt）
-#  1) 启动隧道（先 UDP 443，不通自动切 TCP 443）
-#  5) 查看节点信息（含代理客户端表单的逐字段填法）
+#  1) 提取 WireGuard 节点与二维码
+#  2) 提取 MASQUE 节点与二维码
+#  3) 选择 MASQUE 节点后，手动启动或停止本地 SOCKS5
+#  4) 查看 SOCKS5 状态与当前所用节点信息
+#  5) 查看已获取的节点及二维码位置
 ```
 
-首次使用请安装二维码依赖：`python3 -m pip install -r requirements.txt`。此外需要 `openssl`（macOS/Linux 自带）+ [usque](https://github.com/Diniboy1123/usque/releases) 二进制（菜单 12 自动下载）。
+首次使用请安装二维码依赖：`python3 -m pip install -r requirements.txt`。此外需要 `openssl`（macOS/Linux 自带）和用于本地 MASQUE SOCKS5 的 [usque](https://github.com/Diniboy1123/usque/releases) 二进制。
 
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `manage.sh` | 管理面板 / 命令行（start·stop·status·log·info） |
+| `manage.sh` | 五项式管理面板（提取 WireGuard、提取 MASQUE、SOCKS5 控制、状态、节点查看） |
 | `zt_login.py` | Zero Trust OTP 登录 → Team Token → WireGuard 注册导出 |
 | `zerotrust2wg.py` | 用 Team Token 注册设备，导出 WireGuard/Surge/sing-box 配置 |
 | `zt_masque.py` | 设备 MASQUE 化（注册/切换/回退/查询），导出 usque 配置 |
@@ -41,9 +41,9 @@ cd zerotrust-warp-masque
 
 ## 代理客户端接入
 
-MASQUE 节点导出后，使用菜单 1 查看节点。二维码位于 `out/masque-nodes/*.png`，可在 Shadowrocket 的扫码导入中使用。二维码和对应 `.txt` 链接包含私钥，不能公开分享。
+WireGuard 的二维码为 `out/warp-wireguard-qr.png`；MASQUE 二维码为 `out/masque-nodes/*.png`。两者均可在 Shadowrocket 的扫码导入中使用。二维码和对应配置包含私钥，不能公开分享。
 
-如需把某个节点在本机作为 SOCKS5 使用：先在菜单 2 选择节点（此时不会启动代理），再在菜单 3 手动启动。字段对照见 `./manage.sh info`：
+如需把某个 MASQUE 节点在本机作为 SOCKS5 使用：在菜单 3 选择节点并确认启动；再次进入菜单 3 可停止它。菜单 4 会显示运行状态、本地 SOCKS5 地址、当前 MASQUE 节点、远端地址、SNI、隧道 IP 和出口测试结果，不会输出私钥或令牌。
 
 ```
 地址 162.159.197.2   端口 443   SNI zt-masque.cloudflareclient.com
