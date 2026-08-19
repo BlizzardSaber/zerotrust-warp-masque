@@ -42,6 +42,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zerotrust2wg import validate_team_or_cleanup  # noqa: E402  (--new 模式复用 team 校验)
@@ -54,6 +55,7 @@ HEADERS = {
     "Connection": "Keep-Alive",
 }
 OUT_DIR = Path(__file__).resolve().parent / "out"
+NODES_DIR = OUT_DIR / "masque-nodes"
 ACCOUNT_JSON = OUT_DIR / "warp-account.json"
 DEFAULT_EP_V4 = "162.159.198.1"
 DEFAULT_EP_V6 = "2606:4700:103::"
@@ -189,23 +191,72 @@ def build_and_save(resp, priv_b64, access_token):
         json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
 
     sni = SNI_TEAM if is_team else SNI_FREE
+    # Shadowrocket 的 MASQUE 分享格式。二维码内含私钥和 access token 等敏感
+    # 凭据，导出的 PNG/链接只能交给受信任的设备，不能公开分享。
+    node_name = f"masque-{cfg['id'] or 'unknown'}"
+    node_cfg = dict(cfg, sni=sni)
+    NODES_DIR.mkdir(exist_ok=True)
+    node_json = NODES_DIR / f"{node_name}.json"
+    node_json.write_text(json.dumps(node_cfg, indent=2, ensure_ascii=False) + "\n")
+    link = "masque://{}:443?{}#{}".format(
+        cfg["endpoint_v4"],
+        urlencode({
+            "publicKey": cfg["endpoint_pub_key"],
+            "privateKey": cfg["private_key"],
+            "ip": cfg["ipv4"],
+            "dns": "162.159.36.1",
+            "mtu": "1280",
+            "sni": sni,
+            "udp": "1",
+            "cc": "cubic",
+            "keepalive": "30",
+            "flag": "CDN",
+        }),
+        node_name,
+    )
+    link_file = NODES_DIR / f"{node_name}.txt"
+    link_file.write_text(link + "\n")
+    try:
+        import qrcode
+    except ImportError:
+        sys.exit("缺少二维码组件。请执行: python3 -m pip install -r requirements.txt")
+    qr_file = NODES_DIR / f"{node_name}.png"
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=10, border=4)
+    qr.add_data(link)
+    qr.make(fit=True)
+    qr.make_image(fill_color="black", back_color="white").save(qr_file)
     print(f"""
 MASQUE 节点已导出到 {OUT_DIR / 'warp-masque.json'} ✔
+Shadowrocket 导入二维码: {qr_file} ✔
+节点链接（含敏感凭据）: {link_file}
 
   设备 ID:     {cfg['id']}
   账户类型:    {acct.get('account_type', '?')}{'（Zero Trust，用 zt-masque SNI）' if is_team else '（免费，用 consumer-masque SNI）'}
   Endpoint:    {cfg['endpoint_v4']}:443 (UDP/HTTP/3){', ' + cfg['endpoint_v6'] if cfg['endpoint_v6'] else ''}
   隧道内地址:  {cfg['ipv4']} / {cfg['ipv6']}
 
-使用（usque 二进制: github.com/Diniboy1123/usque/releases，本目录已有一份）:
-  HTTP/2 (TCP 443):  ./usque -c out/warp-masque.json socks --http2 --sni-address {sni}
-  HTTP/3 (UDP 443):  ./usque -c out/warp-masque.json socks --sni-address {sni}
-  → 本地 SOCKS5 127.0.0.1:1080，浏览器/Surge 指向它即走 WARP MASQUE。
-  UDP 被墙的网络（如本机网络）用 --http2，纯 TCP、外表与 HTTPS 相同。
+未自动启动本地 SOCKS5。请在 ./manage.sh 菜单中先查看/选择节点，再手动启动。
 
 验证: 挂上代理访问 https://www.cloudflare.com/cdn-cgi/trace 显示 warp=on 即成功。
 """)
     return cfg
+
+
+def cmd_list():
+    """列出已导出的节点；不启动任何本地代理。"""
+    if not NODES_DIR.exists():
+        print("暂无已导出的 MASQUE 节点。")
+        return
+    nodes = sorted(NODES_DIR.glob("masque-*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if not nodes:
+        print("暂无已导出的 MASQUE 节点。")
+        return
+    for i, path in enumerate(nodes, 1):
+        cfg = json.loads(path.read_text())
+        print(f"{i}) {path.name}: {cfg.get('endpoint_v4', '?')}:443  "
+              f"IP {cfg.get('ipv4', '?')}  SNI {cfg.get('sni', '?')}")
 
 
 def load_account():
@@ -321,6 +372,8 @@ def main():
         cmd_free()
     elif mode == "--new":
         cmd_new()
+    elif mode == "--list":
+        cmd_list()
     else:
         print(__doc__)
 
